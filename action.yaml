@@ -1,0 +1,40 @@
+name: 'HelmRelease Upgrade'
+description: 'Check for newer chart versions and upgrade HelmRelease'
+inputs:
+  config:
+    description: 'Path to file containing HelmRelease resource'
+    required: true
+  helm-repo:
+    description: 'URL of Helm repository containing the Helm charts'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - shell: bash
+      run: |
+        repo_name=$(yq 'select(.kind=="HelmRelease").spec.chart.spec.sourceRef.name' ${{ inputs.config }})
+        chart_name=$(yq 'select(.kind=="HelmRelease").spec.chart.spec.chart' ${{ inputs.config }})
+        helm repo add $repo_name ${{ inputs.helm-repo }}
+
+        chart_version=$(helm search repo $chart_name -ojson | jq -r '.[0].version'); export chart_version
+        branch=upgrade/$chart_name-upgrade-$chart_version
+
+        if git ls-remote | grep "$branch"; then
+          echo Checkout existing branch $branch
+          git checkout $branch
+        else
+          echo Create new branch $branch
+          git checkout -b $branch
+        fi
+
+        yq 'select(.kind=="HelmRelease").spec.chart.spec.version=strenv(chart_version)' -i ${{ inputs.config }}
+
+        git update-index -q --really-refresh
+        if [ -n "$(git diff-index --name-only HEAD --)" ]; then
+          git config user.email "support@netic.dk"
+          git config user.name "Upgrade Automation"
+          git add ${{ inputs.config }}
+          git commit -m "feat($chart_name): Upgrade $chart_name to $chart_version"
+          git push --set-upstream origin $branch
+          gh pr create --base main --title "feat($chart_name): Upgrade $chart_name to $chart_version" --body "Automatic upgrade of $chart_name to latest version $chart_version"
+        fi
